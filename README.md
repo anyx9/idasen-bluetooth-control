@@ -44,7 +44,7 @@ Move the desk to saved positions, watch the live height, and let a configurable 
 ## Installation
 
 ```bash
-git clone https://github.com/anyx9/idasen-bluetooth-control/
+git clone https://github.com/anyx9/idasen-bluetooth-control.git
 cd idasen-bluetooth-control
 python -m pip install bleak pystray Pillow
 ```
