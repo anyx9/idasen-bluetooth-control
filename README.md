@@ -10,7 +10,7 @@ Move the desk to saved positions, watch the live height, and let a configurable 
 
 - Connect via automatic discovery or MAC address; optional auto-connect on app start and auto-reconnect after connection loss
 - Live height display (cm), manual up/down while holding the button, stop at any time
-- Saved positions as one-click buttons (double-click to move), e.g. "Sitzen" and "Stehen"
+- Saved positions as one-click buttons (double-click to move), e.g. "Sit" and "Stand"
 - Robust BLE layer: automatic wake-up and retry on `Insufficient Authentication` (ATT 0x05), clear error messages
 
 **Sit/stand timer ("Pomodoro for your desk")**
@@ -117,7 +117,7 @@ Settings are stored in `~/.idasen_gui.json` and managed via the GUI. Defaults:
 
 ## Troubleshooting
 
-- **`Insufficient Authentication` (ATT 0x05):** the app sends the wake-up sequence and retries automatically. If it persists, click **Pair** once to pair the desk (the official IKEA app pairs during first setup too).
+- **`Insufficient Authentication` (ATT 0x05):** the app sends the wake-up sequence and retries automatically. If it persists, click **Pair** once to pair the desk (the official IKEA app pairs during first setup too). If that doesn't work, try pairing the chair with Windows first. then connect via MAC.
 - **Linux:** pair the desk once with `bluetoothctl pair AA:BB:CC:DD:EE:FF`. For the tray icon, GNOME needs the *AppIndicator and KStatusNotifierItem* extension.
 - **macOS:** direct MAC connect isn't available; the app falls back to discovery automatically (pair the desk once).
 - **Desk not found:** make sure the IKEA app is closed/disconnected — the desk holds only one BLE connection at a time.
