@@ -1,4 +1,4 @@
-# IDÅSEN Desk Control
+# IDÅSEN Bluetooth Control
 
 Windows/Linux/macOS desktop app that connects to an [IKEA IDÅSEN](https://www.ikea.com/) sit/stand desk over Bluetooth Low Energy — written in Python with tkinter and [bleak](https://github.com/hbldh/bleak).
 
