@@ -76,6 +76,7 @@ Settings are stored in `~/.idasen_gui.json` and managed via the GUI. Defaults:
 ```json
 {
   "mac": "",
+  "language": "de",
   "positions": [["Sit", 0.72], ["Stand", 1.10]],
   "timer": {
     "sit": "Sit",
