@@ -1860,9 +1860,10 @@ class App(tk.Tk):
                     self.after(0, lambda: self._set_locked(True))
                 elif wparam == WTS_SESSION_UNLOCK:
                     self.after(0, lambda: self._set_locked(False))
-            return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+            return user32.DefWindowProcW(hwnd, msg, wparam, ctypes.c_ssize_t(lparam).value)
 
-        WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_long, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+        # Use c_ssize_t for LPARAM to handle 64-bit values correctly
+        WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, ctypes.c_ssize_t)
         wnd_proc_cb = WNDPROC(wnd_proc)
 
         # Register window class (define WNDCLASSEXW manually - not in Python 3.10 wintypes)
