@@ -853,7 +853,31 @@ def workstation_locked() -> bool:
             return True
         user32.CloseDesktop(handle)
 
-        # Fallback 2: Screensaver check
+        # Fallback 2: Check for lock screen window (LogonUI.exe / winlogon.exe)
+        # This is more reliable on Windows 10/11 as WTS may have a delay
+        try:
+            hwnd = user32.GetForegroundWindow()
+            if hwnd:
+                # Get the process name of the foreground window
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value:
+                    h_process = kernel32.OpenProcess(0x0400 | 0x0010, False, pid.value)
+                    if h_process:
+                        try:
+                            name_buffer = ctypes.create_unicode_buffer(1024)
+                            size = wintypes.DWORD(1024)
+                            if kernel32.QueryFullProcessImageNameW(h_process, 0, name_buffer, ctypes.byref(size)):
+                                process_name = name_buffer.value.lower()
+                                if 'logonui.exe' in process_name or 'winlogon.exe' in process_name:
+                                    kernel32.CloseHandle(h_process)
+                                    return True
+                        finally:
+                            kernel32.CloseHandle(h_process)
+        except Exception:
+            pass
+
+        # Fallback 3: Screensaver check
         try:
             system_parameters_info = user32.SystemParametersInfoW
             SPI_GETSCREENSAVERRUNNING = 0x0072
@@ -1039,8 +1063,6 @@ class App(tk.Tk):
             self.after(600, self._connect)  # auto-connect on app start
         self.after(100, self._poll_events)
         self.after(1000, self._tick_timer)
-        if sys.platform.startswith("win"):
-            self.after(500, self._setup_wts_notification)
         self.after(500, self._poll_lock)
 
     # ------------------------------------------------------------- UI ---
@@ -1771,37 +1793,7 @@ class App(tk.Tk):
             self._locked = locked
             self._update_countdown_label()
             self._update_tray_tooltip()
-        self.after(500, self._poll_lock)  # Poll every 500ms for lock detection
-    
-    def _setup_wts_notification(self) -> None:
-        """Register for WTS session notifications to detect lock/unlock instantly."""
-        if not sys.platform.startswith("win"):
-            return
-        try:
-            import ctypes  # noqa: PLC0415
-            wtsapi32 = ctypes.windll.Wtsapi32
-            # Register for session notifications on our tkinter window
-            # This will send WM_WTSSESSION_CHANGE messages to our window
-            hwnd = self.winfo_id()
-            if hwnd:
-                result = wtsapi32.WTSRegisterSessionNotification(hwnd, 1)  # 1 = current session
-                if not result:
-                    pass  # Fallback to polling
-        except Exception:
-            pass  # Fallback to polling
-    
-    def _cleanup_wts_notification(self) -> None:
-        """Unregister WTS session notifications."""
-        if not sys.platform.startswith("win"):
-            return
-        try:
-            import ctypes  # noqa: PLC0415
-            wtsapi32 = ctypes.windll.Wtsapi32
-            hwnd = self.winfo_id()
-            if hwnd:
-                wtsapi32.WTSUnRegisterSessionNotification(hwnd)
-        except Exception:
-            pass
+        self.after(500, self._poll_lock)  # Poll every 500ms for faster lock detection
 
     def _on_lock_pref(self) -> None:
         self.config["timer"]["pause_on_lock"] = bool(self.lock_pause_var.get())
@@ -2015,7 +2007,6 @@ class App(tk.Tk):
         self.backend.submit(self.backend.disconnect())
         self._tray.stop()
         self.ble.stop()
-        self._cleanup_wts_notification()
         self.destroy()
 
 
