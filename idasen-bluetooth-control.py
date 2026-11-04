@@ -1877,35 +1877,53 @@ class App(tk.Tk):
             self._lock_poll_fallback()
             return
 
-        # Create message-only window
+        # Create message-only window (HWND_MESSAGE = -3)
+        HWND_MESSAGE = wintypes.HWND(-3)
         hwnd = user32.CreateWindowExW(
             0, "IdasenLockMonitor", "IdasenLockMonitor",
             0, 0, 0, 0, 0,
-            None, None, wc.hInstance, None  # HWND_MESSAGE = -3 for message-only
+            HWND_MESSAGE, None, wc.hInstance, None
         )
         if not hwnd:
             self._lock_poll_fallback()
             return
 
         # Register for WTS session notifications
-        if not wtsapi32.WTSRegisterSessionNotification(hwnd, 0):  # 0 = all sessions
-            self._lock_poll_fallback()
-            return
+        wts_registered = bool(wtsapi32.WTSRegisterSessionNotification(hwnd, 0))  # 0 = all sessions
 
         # Initial state check
         self.after(0, lambda: self._set_locked(workstation_locked()))
 
-        # Message loop
+        # Hybrid loop: process messages AND poll every 500ms as backup
         msg = wintypes.MSG()
+        last_poll = 0
+        import time as time_mod
         while not self._lock_stop.is_set():
-            ret = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
-            if ret <= 0:
-                break
-            user32.TranslateMessage(ctypes.byref(msg))
-            user32.DispatchMessageW(ctypes.byref(msg))
+            # Process all pending messages
+            while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):  # PM_REMOVE=1
+                if msg.message == 0x0012:  # WM_QUIT
+                    self._lock_stop.set()
+                    break
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+
+            # Poll as backup every 500ms (in case WTS notifications don't work)
+            now = time_mod.monotonic()
+            if now - last_poll >= 0.5:
+                last_poll = now
+                try:
+                    locked = workstation_locked()
+                    if locked != self._locked:
+                        self.after(0, lambda l=locked: self._set_locked(l))
+                except Exception:
+                    pass
+
+            # Sleep briefly to avoid busy loop
+            self._lock_stop.wait(0.05)
 
         # Cleanup
-        wtsapi32.WTSUnRegisterSessionNotification(hwnd)
+        if wts_registered:
+            wtsapi32.WTSUnRegisterSessionNotification(hwnd)
         user32.DestroyWindow(hwnd)
         user32.UnregisterClassW("IdasenLockMonitor", wc.hInstance)
 
