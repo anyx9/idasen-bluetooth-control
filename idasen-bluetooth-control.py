@@ -792,13 +792,12 @@ def fmt_mmss(seconds: int) -> str:
 # ---------------------------------------------------------------------------
 def workstation_locked() -> bool:
     """True if the Windows workstation is locked (or a secure desktop such
-    as a UAC prompt is active, or screensaver is running). On other systems: False.
+    as a UAC prompt is active). On other systems: False.
 
-    Uses multiple detection methods:
-    1. WTS session info (WTSSessionInfoEx) - primary for Win 10/11
-    2. Foreground window process check (LogonUI.exe/winlogon.exe)
-    3. Secure Desktop check via OpenInputDesktop (UAC, Ctrl+Alt+Del)
-    4. Screensaver check
+    Primary: WTSQuerySessionInformation with WTSSessionInfoEx.
+    SessionFlags at offset 16 contains WTS_SESSIONSTATE_LOCK (0x00000001).
+
+    Fallback: OpenInputDesktop for secure desktop (UAC, Ctrl+Alt+Del).
     """
     if not sys.platform.startswith("win"):
         return False
@@ -813,7 +812,8 @@ def workstation_locked() -> bool:
         WTS_CURRENT_SERVER_HANDLE = None
         session_id = kernel32.WTSGetActiveConsoleSessionId()
 
-        # Method 1: WTS session info - try both offsets (8 for 32-bit, 16 for 64-bit)
+        # Method 1: WTS session info with WTSSessionInfoEx
+        # As per user's reference: SessionFlags at offset 16 in the returned buffer
         WTSSessionInfoEx = 17
         buffer = ctypes.c_void_p()
         bytes_returned = wintypes.DWORD()
@@ -826,55 +826,20 @@ def workstation_locked() -> bool:
             ctypes.byref(bytes_returned)
         ):
             try:
-                if buffer.value and bytes_returned.value >= 16:
+                if buffer.value and bytes_returned.value >= 20:
                     import struct
-                    level = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 0)[0]
-                    sid = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 4)[0]
-                    
-                    if level == 1 and sid == session_id:
-                        # Try offset 8 first (32-bit structure)
-                        flags = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 8)[0]
-                        if flags & 0x00000001:
-                            return True
-                        # Try offset 16 (64-bit structure with padding)
-                        if bytes_returned.value >= 20:
-                            flags = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 16)[0]
-                            if flags & 0x00000001:
-                                return True
+                    # Read SessionFlags at offset 16 as per user's reference
+                    flags = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 16)[0]
+                    if flags & 0x00000001:
+                        return True
             finally:
                 wtsapi32.WTSFreeMemory(buffer.value)
 
-        # Method 2: Foreground window process check
-        hwnd = user32.GetForegroundWindow()
-        if hwnd:
-            pid = wintypes.DWORD()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            if pid.value:
-                h_process = kernel32.OpenProcess(0x0400 | 0x0010, False, pid.value)
-                if h_process:
-                    try:
-                        buffer_len = 1024
-                        name_buffer = ctypes.create_unicode_buffer(buffer_len)
-                        size = wintypes.DWORD(buffer_len)
-                        if kernel32.QueryFullProcessImageNameW(h_process, 0, name_buffer, ctypes.byref(size)):
-                            process_name = name_buffer.value.lower()
-                            if 'logonui.exe' in process_name or 'winlogon.exe' in process_name:
-                                return True
-                    finally:
-                        kernel32.CloseHandle(h_process)
-
-        # Method 3: Secure Desktop check
-        handle = user32.OpenInputDesktop(0, False, 0x0001)
+        # Fallback: Secure Desktop check (UAC, Ctrl+Alt+Del)
+        handle = user32.OpenInputDesktop(0, False, 0x0001)  # DESKTOP_READOBJECTS
         if not handle:
             return True
         user32.CloseDesktop(handle)
-
-        # Method 4: Screensaver check
-        SPI_GETSCREENSAVERRUNNING = 0x0072
-        screensaver_running = wintypes.BOOL()
-        if user32.SystemParametersInfoW(SPI_GETSCREENSAVERRUNNING, 0, ctypes.byref(screensaver_running), 0):
-            if screensaver_running.value:
-                return True
 
         return False
     except Exception:  # noqa: BLE001
