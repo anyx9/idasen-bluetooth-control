@@ -1817,7 +1817,7 @@ class App(tk.Tk):
         self.after(500, self._poll_lock)  # Poll every 500ms for faster lock detection
 
     def _start_lock_thread(self) -> None:
-        """Start a background thread for lock detection that runs independently of the GUI."""
+        """Start a background thread that uses WTS notifications for instant lock detection."""
         if self._lock_thread is not None:
             return
         self._lock_stop.clear()
@@ -1832,16 +1832,93 @@ class App(tk.Tk):
             self._lock_thread = None
 
     def _lock_loop(self) -> None:
-        """Background thread that monitors workstation lock state every 200ms."""
+        """Background thread using WTSRegisterSessionNotification for instant lock/unlock events.
+        
+        Creates a message-only window, registers it for WTS session notifications,
+        and runs a message loop. When WM_WTSSESSION_CHANGE is received with
+        WTS_SESSION_LOCK (7) or WTS_SESSION_UNLOCK (8), updates the lock state.
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        wtsapi32 = ctypes.windll.Wtsapi32
+        kernel32 = ctypes.windll.kernel32
+
+        WM_WTSSESSION_CHANGE = 0x02B1
+        WTS_SESSION_LOCK = 7
+        WTS_SESSION_UNLOCK = 8
+        WTS_CONSOLE_CONNECT = 1
+        WTS_CONSOLE_DISCONNECT = 2
+        WTS_REMOTE_CONNECT = 3
+        WTS_REMOTE_DISCONNECT = 4
+
+        # Window procedure that handles WM_WTSSESSION_CHANGE
+        def wnd_proc(hwnd, msg, wparam, lparam):
+            if msg == WM_WTSSESSION_CHANGE:
+                if wparam == WTS_SESSION_LOCK:
+                    self.after(0, lambda: self._set_locked(True))
+                elif wparam == WTS_SESSION_UNLOCK:
+                    self.after(0, lambda: self._set_locked(False))
+            return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+        WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_long, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+        wnd_proc_cb = WNDPROC(wnd_proc)
+
+        # Register window class
+        wc = wintypes.WNDCLASSEXW()
+        wc.cbSize = ctypes.sizeof(wintypes.WNDCLASSEXW)
+        wc.lpfnWndProc = wnd_proc_cb
+        wc.hInstance = kernel32.GetModuleHandleW(None)
+        wc.lpszClassName = "IdasenLockMonitor"
+        class_atom = user32.RegisterClassExW(ctypes.byref(wc))
+        if not class_atom:
+            # Fallback to polling if window creation fails
+            self._lock_poll_fallback()
+            return
+
+        # Create message-only window
+        hwnd = user32.CreateWindowExW(
+            0, "IdasenLockMonitor", "IdasenLockMonitor",
+            0, 0, 0, 0, 0,
+            None, None, wc.hInstance, None  # HWND_MESSAGE = -3 for message-only
+        )
+        if not hwnd:
+            self._lock_poll_fallback()
+            return
+
+        # Register for WTS session notifications
+        if not wtsapi32.WTSRegisterSessionNotification(hwnd, 0):  # 0 = all sessions
+            self._lock_poll_fallback()
+            return
+
+        # Initial state check
+        self.after(0, lambda: self._set_locked(workstation_locked()))
+
+        # Message loop
+        msg = wintypes.MSG()
+        while not self._lock_stop.is_set():
+            ret = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+            if ret <= 0:
+                break
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+
+        # Cleanup
+        wtsapi32.WTSUnRegisterSessionNotification(hwnd)
+        user32.DestroyWindow(hwnd)
+        user32.UnregisterClassW("IdasenLockMonitor", wc.hInstance)
+
+    def _lock_poll_fallback(self) -> None:
+        """Fallback to polling if WTS notification setup fails."""
         while not self._lock_stop.is_set():
             try:
                 locked = workstation_locked()
                 if locked != self._locked:
-                    # Use after() to safely update from the main thread
                     self.after(0, lambda l=locked: self._set_locked(l))
             except Exception:
                 pass
-            self._lock_stop.wait(0.2)  # Check every 200ms
+            self._lock_stop.wait(0.5)
 
     def _set_locked(self, locked: bool) -> None:
         """Update locked state from the main thread."""
