@@ -853,12 +853,12 @@ def workstation_locked() -> bool:
             return True
         user32.CloseDesktop(handle)
 
-        # Fallback 2: Check for lock screen window (LogonUI.exe / winlogon.exe)
+        # Fallback 2: Enumerate all windows to find lock screen (LogonUI.exe/winlogon.exe)
         # This is more reliable on Windows 10/11 as WTS may have a delay
         try:
-            hwnd = user32.GetForegroundWindow()
-            if hwnd:
-                # Get the process name of the foreground window
+            def enum_callback(hwnd, lparam):
+                if not user32.IsWindowVisible(hwnd):
+                    return True
                 pid = wintypes.DWORD()
                 user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
                 if pid.value:
@@ -870,10 +870,17 @@ def workstation_locked() -> bool:
                             if kernel32.QueryFullProcessImageNameW(h_process, 0, name_buffer, ctypes.byref(size)):
                                 process_name = name_buffer.value.lower()
                                 if 'logonui.exe' in process_name or 'winlogon.exe' in process_name:
-                                    kernel32.CloseHandle(h_process)
-                                    return True
+                                    ctypes.cast(lparam, ctypes.POINTER(wintypes.BOOL))[0] = True
+                                    return False  # Stop enumeration
                         finally:
                             kernel32.CloseHandle(h_process)
+                return True
+
+            found = wintypes.BOOL(False)
+            EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, ctypes.POINTER(wintypes.BOOL))
+            user32.EnumWindows(EnumWindowsProc(enum_callback), ctypes.byref(found))
+            if found.value:
+                return True
         except Exception:
             pass
 
