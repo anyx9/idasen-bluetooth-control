@@ -794,11 +794,13 @@ def workstation_locked() -> bool:
     """True if the Windows workstation is locked (or a secure desktop such
     as a UAC prompt is active, or screensaver is running). On other systems: False.
 
-    Uses three signals combined:
-    1. WTS session status (WTSQuerySessionInformation with WTSSessionInfoEx) -
-       toggles exactly with Win+L on Windows 10/11
-    2. Secure Desktop (OpenInputDesktop) - catches UAC prompts
-    3. Screensaver running - pauses timer when screensaver is active
+    Primary method: WTSQuerySessionInformation with WTSSessionInfoEx (Level 1)
+    which contains SessionFlags at offset 8 with WTS_SESSIONSTATE_LOCK (0x00000001).
+    This toggles exactly with Win+L on Windows 10/11.
+
+    Fallbacks:
+    - OpenInputDesktop: fails on secure desktop (UAC, Ctrl+Alt+Del)
+    - Screensaver check via SystemParametersInfoW
     """
     if not sys.platform.startswith("win"):
         return False
@@ -806,77 +808,59 @@ def workstation_locked() -> bool:
         import ctypes  # noqa: PLC0415
         from ctypes import wintypes  # noqa: PLC0415
 
-        # WTS API constants
-        WTS_CURRENT_SERVER_HANDLE = None
-        WTSSessionInfoEx = 17
-        WTS_CONNECTSTATE_CLASS = 1  # For compatibility check
-
-        # Get current session ID
         kernel32 = ctypes.windll.kernel32
+        wtsapi32 = ctypes.windll.Wtsapi32
+        user32 = ctypes.windll.user32
+
+        WTS_CURRENT_SERVER_HANDLE = None
         session_id = kernel32.WTSGetActiveConsoleSessionId()
 
-        # Query session information with WTSSessionInfoEx
-        wtsapi32 = ctypes.windll.Wtsapi32
+        # Primary: WTSSessionInfoEx returns WTSINFOEX_LEVEL1
+        WTSSessionInfoEx = 17
         buffer = ctypes.c_void_p()
         bytes_returned = wintypes.DWORD()
 
-        result = wtsapi32.WTSQuerySessionInformationW(
+        if wtsapi32.WTSQuerySessionInformationW(
             WTS_CURRENT_SERVER_HANDLE,
             session_id,
             WTSSessionInfoEx,
             ctypes.byref(buffer),
             ctypes.byref(bytes_returned)
-        )
+        ):
+            try:
+                if buffer.value and bytes_returned.value >= 12:
+                    # WTSINFOEX_LEVEL1 layout:
+                    # DWORD Level (offset 0)
+                    # DWORD SessionId (offset 4)
+                    # DWORD SessionFlags (offset 8)
+                    import struct
+                    level = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 0)[0]
+                    sid = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 4)[0]
+                    flags = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 8)[0]
 
-        if result and buffer.value and bytes_returned.value >= 20:
-            # WTSSessionInfoEx returns a WTSINFOEX_LEVEL1 structure
-            # Level is at offset 0 (4 bytes), SessionId at offset 4 (4 bytes)
-            # SessionFlags at offset 16 (4 bytes)
-            import struct
-            level = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 0)[0]
-            sid = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 4)[0]
-            flags = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 16)[0]
+                    if level == 1 and sid == session_id:
+                        # WTS_SESSIONSTATE_LOCK = 0x00000001
+                        if flags & 0x00000001:
+                            return True
+            finally:
+                wtsapi32.WTSFreeMemory(buffer.value)
 
-            # Validate: Level must be 1, SessionId must match current
-            if level == 1 and sid == session_id:
-                # WTS_SESSIONSTATE_LOCK = 0x00000001 (session is locked)
-                if flags & 0x00000001:
-                    wtsapi32.WTSFreeMemory(buffer.value)
-                    return True
-
-            wtsapi32.WTSFreeMemory(buffer.value)
-
-        # Fallback 1: Secure Desktop check (UAC prompts)
-        user32 = ctypes.windll.user32
+        # Fallback 1: Secure Desktop check (UAC prompts, Ctrl+Alt+Del)
         handle = user32.OpenInputDesktop(0, False, 0x0001)  # DESKTOP_READOBJECTS
         if not handle:
             return True
         user32.CloseDesktop(handle)
 
         # Fallback 2: Screensaver check
-        try:
-            system_parameters_info = user32.SystemParametersInfoW
-            SPI_GETSCREENSAVERRUNNING = 0x0072
-            screensaver_running = wintypes.BOOL()
-            if system_parameters_info(SPI_GETSCREENSAVERRUNNING, 0, ctypes.byref(screensaver_running), 0):
-                if screensaver_running.value:
-                    return True
-        except Exception:
-            pass
+        SPI_GETSCREENSAVERRUNNING = 0x0072
+        screensaver_running = wintypes.BOOL()
+        if user32.SystemParametersInfoW(SPI_GETSCREENSAVERRUNNING, 0, ctypes.byref(screensaver_running), 0):
+            if screensaver_running.value:
+                return True
 
         return False
     except Exception:  # noqa: BLE001
-        # If WTS API fails, fall back to old OpenInputDesktop method
-        try:
-            import ctypes as ct
-            user32 = ct.windll.user32
-            handle = user32.OpenInputDesktop(0, False, 0x0001)
-            if not handle:
-                return True
-            user32.CloseDesktop(handle)
-            return False
-        except Exception:
-            return False
+        return False
 
 
 # ---------------------------------------------------------------------------
