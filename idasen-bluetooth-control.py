@@ -1039,7 +1039,9 @@ class App(tk.Tk):
             self.after(600, self._connect)  # auto-connect on app start
         self.after(100, self._poll_events)
         self.after(1000, self._tick_timer)
-        self.after(3000, self._poll_lock)
+        if sys.platform.startswith("win"):
+            self.after(500, self._setup_wts_notification)
+        self.after(500, self._poll_lock)
 
     # ------------------------------------------------------------- UI ---
     def _reg(self, widget, key: str):
@@ -1769,7 +1771,37 @@ class App(tk.Tk):
             self._locked = locked
             self._update_countdown_label()
             self._update_tray_tooltip()
-        self.after(500, self._poll_lock)  # Poll more frequently for faster lock detection
+        self.after(500, self._poll_lock)  # Poll every 500ms for lock detection
+    
+    def _setup_wts_notification(self) -> None:
+        """Register for WTS session notifications to detect lock/unlock instantly."""
+        if not sys.platform.startswith("win"):
+            return
+        try:
+            import ctypes  # noqa: PLC0415
+            wtsapi32 = ctypes.windll.Wtsapi32
+            # Register for session notifications on our tkinter window
+            # This will send WM_WTSSESSION_CHANGE messages to our window
+            hwnd = self.winfo_id()
+            if hwnd:
+                result = wtsapi32.WTSRegisterSessionNotification(hwnd, 1)  # 1 = current session
+                if not result:
+                    pass  # Fallback to polling
+        except Exception:
+            pass  # Fallback to polling
+    
+    def _cleanup_wts_notification(self) -> None:
+        """Unregister WTS session notifications."""
+        if not sys.platform.startswith("win"):
+            return
+        try:
+            import ctypes  # noqa: PLC0415
+            wtsapi32 = ctypes.windll.Wtsapi32
+            hwnd = self.winfo_id()
+            if hwnd:
+                wtsapi32.WTSUnRegisterSessionNotification(hwnd)
+        except Exception:
+            pass
 
     def _on_lock_pref(self) -> None:
         self.config["timer"]["pause_on_lock"] = bool(self.lock_pause_var.get())
@@ -1983,6 +2015,7 @@ class App(tk.Tk):
         self.backend.submit(self.backend.disconnect())
         self._tray.stop()
         self.ble.stop()
+        self._cleanup_wts_notification()
         self.destroy()
 
 
