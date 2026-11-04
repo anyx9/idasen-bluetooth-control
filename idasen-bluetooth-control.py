@@ -1969,12 +1969,6 @@ class App(tk.Tk):
         """Update locked state from the main thread."""
         if locked != self._locked:
             self._locked = locked
-            # Debug log
-            try:
-                with open(os.path.expanduser("~/.idasen_lock_debug.log"), "a") as f:
-                    f.write(f"{datetime.now().isoformat()} locked={locked} remaining={self.remaining}\n")
-            except Exception:
-                pass
             self._update_countdown_label()
             self._update_tray_tooltip()
 
