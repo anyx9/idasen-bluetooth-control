@@ -794,13 +794,11 @@ def workstation_locked() -> bool:
     """True if the Windows workstation is locked (or a secure desktop such
     as a UAC prompt is active, or screensaver is running). On other systems: False.
 
-    Primary method: WTSQuerySessionInformation with WTSSessionInfoEx (Level 1)
-    which contains SessionFlags at offset 8 with WTS_SESSIONSTATE_LOCK (0x00000001).
-    This toggles exactly with Win+L on Windows 10/11.
-
-    Fallbacks:
-    - OpenInputDesktop: fails on secure desktop (UAC, Ctrl+Alt+Del)
-    - Screensaver check via SystemParametersInfoW
+    Uses multiple methods combined:
+    1. Foreground window check: if LogonUI.exe or winlogon.exe is foreground, workstation is locked
+    2. WTS session info: WTSSessionInfoEx with SessionFlags
+    3. Secure Desktop check via OpenInputDesktop
+    4. Screensaver check
     """
     if not sys.platform.startswith("win"):
         return False
@@ -808,14 +806,40 @@ def workstation_locked() -> bool:
         import ctypes  # noqa: PLC0415
         from ctypes import wintypes  # noqa: PLC0415
 
-        kernel32 = ctypes.windll.kernel32
-        wtsapi32 = ctypes.windll.Wtsapi32
         user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
 
+        # Method 1: Foreground window check - most reliable
+        # When locked, LogonUI.exe (Windows 10/11) or winlogon.exe is the foreground window
+        hwnd = user32.GetForegroundWindow()
+        if hwnd:
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length > 0:
+                buffer = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buffer, length + 1)
+                # Also try getting the process name
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value:
+                    h_process = kernel32.OpenProcess(0x0400 | 0x0010, False, pid.value)  # PROCESS_QUERY_INFORMATION | PROCESS_VM_READ
+                    if h_process:
+                        try:
+                            # Get process name via QueryFullProcessImageNameW
+                            buffer_len = 1024
+                            name_buffer = ctypes.create_unicode_buffer(buffer_len)
+                            size = wintypes.DWORD(buffer_len)
+                            if kernel32.QueryFullProcessImageNameW(h_process, 0, name_buffer, ctypes.byref(size)):
+                                process_name = name_buffer.value.lower()
+                                if 'logonui.exe' in process_name or 'winlogon.exe' in process_name:
+                                    kernel32.CloseHandle(h_process)
+                                    return True
+                        finally:
+                            kernel32.CloseHandle(h_process)
+
+        # Method 2: WTS session info
+        wtsapi32 = ctypes.windll.Wtsapi32
         WTS_CURRENT_SERVER_HANDLE = None
         session_id = kernel32.WTSGetActiveConsoleSessionId()
-
-        # Primary: WTSSessionInfoEx returns WTSINFOEX_LEVEL1
         WTSSessionInfoEx = 17
         buffer = ctypes.c_void_p()
         bytes_returned = wintypes.DWORD()
@@ -829,29 +853,22 @@ def workstation_locked() -> bool:
         ):
             try:
                 if buffer.value and bytes_returned.value >= 12:
-                    # WTSINFOEX_LEVEL1 layout:
-                    # DWORD Level (offset 0)
-                    # DWORD SessionId (offset 4)
-                    # DWORD SessionFlags (offset 8)
                     import struct
                     level = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 0)[0]
                     sid = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 4)[0]
                     flags = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 8)[0]
-
-                    if level == 1 and sid == session_id:
-                        # WTS_SESSIONSTATE_LOCK = 0x00000001
-                        if flags & 0x00000001:
-                            return True
+                    if level == 1 and sid == session_id and (flags & 0x00000001):
+                        return True
             finally:
                 wtsapi32.WTSFreeMemory(buffer.value)
 
-        # Fallback 1: Secure Desktop check (UAC prompts, Ctrl+Alt+Del)
-        handle = user32.OpenInputDesktop(0, False, 0x0001)  # DESKTOP_READOBJECTS
+        # Method 3: Secure Desktop check
+        handle = user32.OpenInputDesktop(0, False, 0x0001)
         if not handle:
             return True
         user32.CloseDesktop(handle)
 
-        # Fallback 2: Screensaver check
+        # Method 4: Screensaver check
         SPI_GETSCREENSAVERRUNNING = 0x0072
         screensaver_running = wintypes.BOOL()
         if user32.SystemParametersInfoW(SPI_GETSCREENSAVERRUNNING, 0, ctypes.byref(screensaver_running), 0):
