@@ -806,34 +806,45 @@ def workstation_locked() -> bool:
         import ctypes  # noqa: PLC0415
         from ctypes import wintypes  # noqa: PLC0415
 
+        # WTS API constants
+        WTS_CURRENT_SERVER_HANDLE = None
+        WTSSessionInfoEx = 17
+        WTS_CONNECTSTATE_CLASS = 1  # For compatibility check
+
+        # Get current session ID
         kernel32 = ctypes.windll.kernel32
         session_id = kernel32.WTSGetActiveConsoleSessionId()
 
-        # Try WTSSessionInfoEx first (class 17)
+        # Query session information with WTSSessionInfoEx
         wtsapi32 = ctypes.windll.Wtsapi32
         buffer = ctypes.c_void_p()
         bytes_returned = wintypes.DWORD()
 
-        if wtsapi32.WTSQuerySessionInformationW(
-            None,  # WTS_CURRENT_SERVER_HANDLE
+        result = wtsapi32.WTSQuerySessionInformationW(
+            WTS_CURRENT_SERVER_HANDLE,
             session_id,
-            17,  # WTSSessionInfoEx
+            WTSSessionInfoEx,
             ctypes.byref(buffer),
             ctypes.byref(bytes_returned)
-        ):
-            try:
-                if buffer.value and bytes_returned.value >= 20:
-                    import struct
-                    # Try offset 16 as per user's reference
-                    flags = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 16)[0]
-                    if flags & 0x00000001:
-                        return True
-                    # Try offset 8 as per structure definition
-                    flags = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 8)[0]
-                    if flags & 0x00000001:
-                        return True
-            finally:
-                wtsapi32.WTSFreeMemory(buffer.value)
+        )
+
+        if result and buffer.value and bytes_returned.value >= 20:
+            # WTSSessionInfoEx returns a WTSINFOEX_LEVEL1 structure
+            # Level is at offset 0 (4 bytes), SessionId at offset 4 (4 bytes)
+            # SessionFlags at offset 16 (4 bytes)
+            import struct
+            level = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 0)[0]
+            sid = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 4)[0]
+            flags = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 16)[0]
+
+            # Validate: Level must be 1, SessionId must match current
+            if level == 1 and sid == session_id:
+                # WTS_SESSIONSTATE_LOCK = 0x00000001 (session is locked)
+                if flags & 0x00000001:
+                    wtsapi32.WTSFreeMemory(buffer.value)
+                    return True
+
+            wtsapi32.WTSFreeMemory(buffer.value)
 
         # Fallback 1: Secure Desktop check (UAC prompts)
         user32 = ctypes.windll.user32
