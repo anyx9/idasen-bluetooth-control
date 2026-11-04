@@ -1924,13 +1924,18 @@ class App(tk.Tk):
         # Register for WTS session notifications
         wts_registered = bool(wtsapi32.WTSRegisterSessionNotification(hwnd, 0))  # 0 = all sessions
 
-        # Initial state check
+        if not wts_registered:
+            # WTS registration failed - use polling fallback
+            user32.DestroyWindow(hwnd)
+            user32.UnregisterClassW("IdasenLockMonitor", wc.hInstance)
+            self._lock_poll_fallback()
+            return
+
+        # Initial state check via polling (only once)
         self.after(0, lambda: self._set_locked(workstation_locked()))
 
-        # Hybrid loop: process messages AND poll every 500ms as backup
+        # Message loop: trust ONLY WTS notifications when registered
         msg = wintypes.MSG()
-        last_poll = 0
-        import time as time_mod
         while not self._lock_stop.is_set():
             # Process all pending messages
             while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):  # PM_REMOVE=1
@@ -1939,17 +1944,6 @@ class App(tk.Tk):
                     break
                 user32.TranslateMessage(ctypes.byref(msg))
                 user32.DispatchMessageW(ctypes.byref(msg))
-
-            # Poll as backup every 500ms (in case WTS notifications don't work)
-            now = time_mod.monotonic()
-            if now - last_poll >= 0.5:
-                last_poll = now
-                try:
-                    locked = workstation_locked()
-                    if locked != self._locked:
-                        self.after(0, lambda l=locked: self._set_locked(l))
-                except Exception:
-                    pass
 
             # Sleep briefly to avoid busy loop
             self._lock_stop.wait(0.05)
