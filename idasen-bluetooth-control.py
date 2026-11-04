@@ -1769,7 +1769,7 @@ class App(tk.Tk):
             self._locked = locked
             self._update_countdown_label()
             self._update_tray_tooltip()
-        self.after(3000, self._poll_lock)
+        self.after(500, self._poll_lock)  # Poll more frequently for faster lock detection
 
     def _on_lock_pref(self) -> None:
         self.config["timer"]["pause_on_lock"] = bool(self.lock_pause_var.get())
