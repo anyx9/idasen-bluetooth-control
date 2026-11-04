@@ -58,7 +58,7 @@ python -m pip install windows-toasts
 Run:
 
 ```bash
-python idasen_gui.py
+python idasen-bluetooth-control.py
 ```
 
 ## First-time setup
@@ -118,7 +118,7 @@ Settings are stored in `~/.idasen_gui.json` and managed via the GUI. Defaults:
 
 ## Troubleshooting
 
-- **`Insufficient Authentication` (ATT 0x05):** the app sends the wake-up sequence and retries automatically. If it persists, click **Pair** once to pair the desk (the official IKEA app pairs during first setup too). If that doesn't work, try pairing the chair with Windows first. then connect via MAC.
+- **`Insufficient Authentication` (ATT 0x05):** the app sends the wake-up sequence and retries automatically. If it persists, click **Pair** once to pair the desk (the official IKEA app pairs during first setup too). If that doesn't work, try pairing the desk with Windows first. Then connect via MAC.
 - **Linux:** pair the desk once with `bluetoothctl pair AA:BB:CC:DD:EE:FF`. For the tray icon, GNOME needs the *AppIndicator and KStatusNotifierItem* extension.
 - **macOS:** direct MAC connect isn't available; the app falls back to discovery automatically (pair the desk once).
 - **Desk not found:** make sure the IKEA app is closed/disconnected — the desk holds only one BLE connection at a time.

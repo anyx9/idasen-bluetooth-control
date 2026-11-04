@@ -31,7 +31,7 @@ Requirements:
     python -m pip install windows-toasts
 
 Start:
-    python idasen_gui.py
+    python idasen-bluetooth-control.py
 
 Notes:
 - Pairing mode (press the desk's Bluetooth button twice until the LED
