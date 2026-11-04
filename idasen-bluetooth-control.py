@@ -792,13 +792,13 @@ def fmt_mmss(seconds: int) -> str:
 # ---------------------------------------------------------------------------
 def workstation_locked() -> bool:
     """True if the Windows workstation is locked (or a secure desktop such
-    as a UAC prompt is active, or screensaver is running). On other systems: False.
+    as a UAC prompt is active). On other systems: False.
 
-    Uses three signals combined:
-    1. WTS session status (WTSQuerySessionInformation with WTSSessionInfoEx) -
-       toggles exactly with Win+L on Windows 10/11
-    2. Secure Desktop (OpenInputDesktop) - catches UAC prompts
-    3. Screensaver running - pauses timer when screensaver is active
+    Detection methods:
+    1. WTS session info (WTSQuerySessionInformation with WTSSessionInfoEx)
+    2. Input desktop name check (when locked, desktop is "Winlogon")
+    3. Window enumeration for LogonUI.exe/winlogon.exe
+    4. Screensaver running check
     """
     if not sys.platform.startswith("win"):
         return False
@@ -806,48 +806,36 @@ def workstation_locked() -> bool:
         import ctypes  # noqa: PLC0415
         from ctypes import wintypes  # noqa: PLC0415
 
-        # WTS API constants
-        WTS_CURRENT_SERVER_HANDLE = None
-        WTSSessionInfoEx = 17
-        WTS_CONNECTSTATE_CLASS = 1  # For compatibility check
-
-        # Get current session ID
         kernel32 = ctypes.windll.kernel32
+        wtsapi32 = ctypes.windll.Wtsapi32
+        user32 = ctypes.windll.user32
+
         session_id = kernel32.WTSGetActiveConsoleSessionId()
 
-        # Query session information with WTSSessionInfoEx
-        wtsapi32 = ctypes.windll.Wtsapi32
+        # Method 1: WTS session info with WTSSessionInfoEx (class 17)
         buffer = ctypes.c_void_p()
         bytes_returned = wintypes.DWORD()
 
-        result = wtsapi32.WTSQuerySessionInformationW(
-            WTS_CURRENT_SERVER_HANDLE,
+        if wtsapi32.WTSQuerySessionInformationW(
+            None,  # WTS_CURRENT_SERVER_HANDLE
             session_id,
-            WTSSessionInfoEx,
+            17,  # WTSSessionInfoEx
             ctypes.byref(buffer),
             ctypes.byref(bytes_returned)
-        )
+        ):
+            try:
+                if buffer.value and bytes_returned.value >= 20:
+                    # WTSINFOEX_LEVEL1: Level(0) + SessionId(4) + SessionFlags(16)
+                    level = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 0)[0]
+                    sid = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 4)[0]
+                    flags = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 16)[0]
 
-        if result and buffer.value and bytes_returned.value >= 20:
-            # WTSSessionInfoEx returns a WTSINFOEX_LEVEL1 structure
-            # Level is at offset 0 (4 bytes), SessionId at offset 4 (4 bytes)
-            # SessionFlags at offset 16 (4 bytes)
-            import struct
-            level = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 0)[0]
-            sid = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 4)[0]
-            flags = struct.unpack_from('<I', ctypes.cast(buffer.value, ctypes.POINTER(ctypes.c_ubyte)), 16)[0]
+                    if level == 1 and sid == session_id and (flags & 0x00000001):
+                        return True  # WTS_SESSIONSTATE_LOCK
+            finally:
+                wtsapi32.WTSFreeMemory(buffer.value)
 
-            # Validate: Level must be 1, SessionId must match current
-            if level == 1 and sid == session_id:
-                # WTS_SESSIONSTATE_LOCK = 0x00000001 (session is locked)
-                if flags & 0x00000001:
-                    wtsapi32.WTSFreeMemory(buffer.value)
-                    return True
-
-            wtsapi32.WTSFreeMemory(buffer.value)
-
-        # Fallback 1: Check input desktop name - when locked, it's "Winlogon"
-        user32 = ctypes.windll.user32
+        # Method 2: Input desktop name - when locked, it's "Winlogon"
         handle = user32.OpenInputDesktop(0, False, 0x0001)  # DESKTOP_READOBJECTS
         if not handle:
             return True
@@ -862,8 +850,7 @@ def workstation_locked() -> bool:
         finally:
             user32.CloseDesktop(handle)
 
-        # Fallback 2: Enumerate all windows to find lock screen (LogonUI.exe/winlogon.exe)
-        # This is more reliable on Windows 10/11 as WTS may have a delay
+        # Method 3: Enumerate windows for lock screen process (LogonUI.exe/winlogon.exe)
         try:
             def enum_callback(hwnd, lparam):
                 if not user32.IsWindowVisible(hwnd):
@@ -893,12 +880,11 @@ def workstation_locked() -> bool:
         except Exception:
             pass
 
-        # Fallback 3: Screensaver check
+        # Method 4: Screensaver check
         try:
-            system_parameters_info = user32.SystemParametersInfoW
             SPI_GETSCREENSAVERRUNNING = 0x0072
             screensaver_running = wintypes.BOOL()
-            if system_parameters_info(SPI_GETSCREENSAVERRUNNING, 0, ctypes.byref(screensaver_running), 0):
+            if user32.SystemParametersInfoW(SPI_GETSCREENSAVERRUNNING, 0, ctypes.byref(screensaver_running), 0):
                 if screensaver_running.value:
                     return True
         except Exception:
@@ -906,17 +892,7 @@ def workstation_locked() -> bool:
 
         return False
     except Exception:  # noqa: BLE001
-        # If WTS API fails, fall back to old OpenInputDesktop method
-        try:
-            import ctypes as ct
-            user32 = ct.windll.user32
-            handle = user32.OpenInputDesktop(0, False, 0x0001)
-            if not handle:
-                return True
-            user32.CloseDesktop(handle)
-            return False
-        except Exception:
-            return False
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1864,10 +1840,6 @@ class App(tk.Tk):
         WM_WTSSESSION_CHANGE = 0x02B1
         WTS_SESSION_LOCK = 7
         WTS_SESSION_UNLOCK = 8
-        WTS_CONSOLE_CONNECT = 1
-        WTS_CONSOLE_DISCONNECT = 2
-        WTS_REMOTE_CONNECT = 3
-        WTS_REMOTE_DISCONNECT = 4
 
         # Window procedure that handles WM_WTSSESSION_CHANGE
         def wnd_proc(hwnd, msg, wparam, lparam):
