@@ -1865,9 +1865,25 @@ class App(tk.Tk):
         WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_long, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
         wnd_proc_cb = WNDPROC(wnd_proc)
 
-        # Register window class
-        wc = wintypes.WNDCLASSEXW()
-        wc.cbSize = ctypes.sizeof(wintypes.WNDCLASSEXW)
+        # Register window class (define WNDCLASSEXW manually - not in Python 3.10 wintypes)
+        class WNDCLASSEXW(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.DWORD),
+                ("style", wintypes.UINT),
+                ("lpfnWndProc", WNDPROC),
+                ("cbClsExtra", ctypes.c_int),
+                ("cbWndExtra", ctypes.c_int),
+                ("hInstance", wintypes.HINSTANCE),
+                ("hIcon", wintypes.HICON),
+                ("hCursor", wintypes.HANDLE),
+                ("hbrBackground", wintypes.HBRUSH),
+                ("lpszMenuName", wintypes.LPCWSTR),
+                ("lpszClassName", wintypes.LPCWSTR),
+                ("hIconSm", wintypes.HICON),
+            ]
+
+        wc = WNDCLASSEXW()
+        wc.cbSize = ctypes.sizeof(WNDCLASSEXW)
         wc.lpfnWndProc = wnd_proc_cb
         wc.hInstance = kernel32.GetModuleHandleW(None)
         wc.lpszClassName = "IdasenLockMonitor"
