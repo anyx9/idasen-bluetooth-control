@@ -1845,6 +1845,22 @@ class App(tk.Tk):
         wtsapi32 = ctypes.windll.Wtsapi32
         kernel32 = ctypes.windll.kernel32
 
+        # Set argtypes for 64-bit safety
+        user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, ctypes.c_ssize_t]
+        user32.DefWindowProcW.restype = ctypes.c_ssize_t
+        user32.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+                                            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                            wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID]
+        user32.CreateWindowExW.restype = wintypes.HWND
+        user32.RegisterClassExW.argtypes = [ctypes.c_void_p]
+        user32.RegisterClassExW.restype = wintypes.ATOM
+        user32.GetMessageW.argtypes = [ctypes.c_void_p, wintypes.HWND, wintypes.UINT, wintypes.UINT]
+        user32.PeekMessageW.argtypes = [ctypes.c_void_p, wintypes.HWND, wintypes.UINT, wintypes.UINT, wintypes.UINT]
+        user32.DispatchMessageW.argtypes = [ctypes.c_void_p]
+        user32.TranslateMessage.argtypes = [ctypes.c_void_p]
+        wtsapi32.WTSRegisterSessionNotification.argtypes = [wintypes.HWND, wintypes.DWORD]
+        wtsapi32.WTSRegisterSessionNotification.restype = wintypes.BOOL
+
         WM_WTSSESSION_CHANGE = 0x02B1
         WTS_SESSION_LOCK = 7
         WTS_SESSION_UNLOCK = 8
@@ -1860,7 +1876,7 @@ class App(tk.Tk):
                     self.after(0, lambda: self._set_locked(True))
                 elif wparam == WTS_SESSION_UNLOCK:
                     self.after(0, lambda: self._set_locked(False))
-            return user32.DefWindowProcW(hwnd, msg, wparam, ctypes.c_ssize_t(lparam).value)
+            return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
         # Use c_ssize_t for LPARAM to handle 64-bit values correctly
         WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, ctypes.c_ssize_t)
