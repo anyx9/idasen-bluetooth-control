@@ -846,12 +846,21 @@ def workstation_locked() -> bool:
 
             wtsapi32.WTSFreeMemory(buffer.value)
 
-        # Fallback 1: Secure Desktop check (UAC prompts)
+        # Fallback 1: Check input desktop name - when locked, it's "Winlogon"
         user32 = ctypes.windll.user32
         handle = user32.OpenInputDesktop(0, False, 0x0001)  # DESKTOP_READOBJECTS
         if not handle:
             return True
-        user32.CloseDesktop(handle)
+        try:
+            size = wintypes.DWORD()
+            user32.GetUserObjectInformationW(handle, 2, None, 0, ctypes.byref(size))  # UOI_NAME=2
+            if size.value > 0:
+                buf = ctypes.create_unicode_buffer(size.value // 2 + 1)
+                if user32.GetUserObjectInformationW(handle, 2, buf, size.value, ctypes.byref(size)):
+                    if buf.value.lower() == "winlogon":
+                        return True
+        finally:
+            user32.CloseDesktop(handle)
 
         # Fallback 2: Enumerate all windows to find lock screen (LogonUI.exe/winlogon.exe)
         # This is more reliable on Windows 10/11 as WTS may have a delay
