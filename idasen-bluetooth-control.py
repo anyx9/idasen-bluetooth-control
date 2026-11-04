@@ -1055,6 +1055,8 @@ class App(tk.Tk):
         self._i18n_widgets: list = []  # (widget, key) for live re-translation
         self._tray = TrayIcon(self)
         self._win_toaster = None  # Windows: InteractableWindowsToaster (lazy)
+        self._lock_thread = None  # Background thread for lock detection
+        self._lock_stop = threading.Event()  # Signal to stop lock thread
 
         self._build_ui()
         self._refresh_positions_ui()
@@ -1070,7 +1072,10 @@ class App(tk.Tk):
             self.after(600, self._connect)  # auto-connect on app start
         self.after(100, self._poll_events)
         self.after(1000, self._tick_timer)
-        self.after(500, self._poll_lock)
+        if sys.platform.startswith("win"):
+            self._start_lock_thread()
+        else:
+            self.after(500, self._poll_lock)
 
     # ------------------------------------------------------------- UI ---
     def _reg(self, widget, key: str):
@@ -1802,6 +1807,40 @@ class App(tk.Tk):
             self._update_tray_tooltip()
         self.after(500, self._poll_lock)  # Poll every 500ms for faster lock detection
 
+    def _start_lock_thread(self) -> None:
+        """Start a background thread for lock detection that runs independently of the GUI."""
+        if self._lock_thread is not None:
+            return
+        self._lock_stop.clear()
+        self._lock_thread = threading.Thread(target=self._lock_loop, daemon=True)
+        self._lock_thread.start()
+
+    def _stop_lock_thread(self) -> None:
+        """Stop the lock detection thread."""
+        if self._lock_thread is not None:
+            self._lock_stop.set()
+            self._lock_thread.join(timeout=2.0)
+            self._lock_thread = None
+
+    def _lock_loop(self) -> None:
+        """Background thread that monitors workstation lock state every 200ms."""
+        while not self._lock_stop.is_set():
+            try:
+                locked = workstation_locked()
+                if locked != self._locked:
+                    # Use after() to safely update from the main thread
+                    self.after(0, lambda l=locked: self._set_locked(l))
+            except Exception:
+                pass
+            self._lock_stop.wait(0.2)  # Check every 200ms
+
+    def _set_locked(self, locked: bool) -> None:
+        """Update locked state from the main thread."""
+        if locked != self._locked:
+            self._locked = locked
+            self._update_countdown_label()
+            self._update_tray_tooltip()
+
     def _on_lock_pref(self) -> None:
         self.config["timer"]["pause_on_lock"] = bool(self.lock_pause_var.get())
         save_config(self.config)
@@ -2014,6 +2053,7 @@ class App(tk.Tk):
         self.backend.submit(self.backend.disconnect())
         self._tray.stop()
         self.ble.stop()
+        self._stop_lock_thread()
         self.destroy()
 
 
