@@ -20,6 +20,7 @@ Move the desk to saved positions, watch the live height, and let a configurable 
 - Optionally varies intervals by ±20 % so switches don't become too predictable
 - Warning notification before each switch, with **snooze +5 min** (GUI button, tray menu, or toast button)
 - Work-time window (e.g. Mon–Fri 09:00–17:00); outside the window the timer freezes
+- Optional: **disconnect from the desk after work hours** (auto-reconnect stays enabled)
 - **Lock-screen pause (Windows):** while the workstation is locked the countdown freezes and resumes automatically on unlock
 
 **System tray (pystray + Pillow)**
@@ -91,7 +92,8 @@ Settings are stored in `~/.idasen_gui.json` and managed via the GUI. Defaults:
     "work_start": "09:00",
     "work_end": "17:00",
     "work_weekdays": true,
-    "pause_on_lock": true
+    "pause_on_lock": true,
+    "disconnect_after_hours": false
   },
   "auto_reconnect": true,
   "auto_connect": true,
@@ -111,6 +113,7 @@ Settings are stored in `~/.idasen_gui.json` and managed via the GUI. Defaults:
 | `timer.vary`                        | Vary intervals by ±20 %                                        |
 | `timer.work_*`                      | Work-time window (freeze timer outside)                        |
 | `timer.pause_on_lock`               | Pause timer while the screen is locked (Windows)               |
+| `timer.disconnect_after_hours`      | Disconnect from the desk after work hours                      |
 | `auto_reconnect`                    | Reconnect automatically after connection loss                  |
 | `auto_connect`                      | Connect automatically on app start                             |
 | `minimize_to_tray`                  | Minimize to the system tray instead of the taskbar             |

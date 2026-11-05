@@ -118,6 +118,7 @@ DEFAULT_CONFIG = {
         "work_end": "17:00",
         "work_weekdays": True,
         "pause_on_lock": True,
+        "disconnect_after_hours": False,
     },
     "auto_reconnect": True,
     "auto_connect": True,
@@ -187,6 +188,7 @@ STRINGS = {
         "chk_vary": "Dauer leicht variieren (±20 %)",
         "chk_lock_pause": "Bei gesperrtem Bildschirm pausieren (Windows)",
         "chk_work_hours": "Nur zu Arbeitszeiten:",
+        "chk_disconnect_after": "Nach Arbeitsende vom Tisch trennen",
         "chk_weekdays": "Mo–Fr",
         "msg_timer_stopped": "Timer gestoppt",
         "btn_start_timer": "Timer starten",
@@ -293,6 +295,7 @@ STRINGS = {
         "chk_vary": "Vary duration slightly (±20 %)",
         "chk_lock_pause": "Pause while screen is locked (Windows)",
         "chk_work_hours": "Only during work hours:",
+        "chk_disconnect_after": "Disconnect from desk after work hours",
         "chk_weekdays": "Mon–Fri",
         "msg_timer_stopped": "Timer stopped",
         "btn_start_timer": "Start timer",
@@ -1031,6 +1034,7 @@ class App(tk.Tk):
         self.timer_paused = False
         self._warned = False  # warning already shown for the current phase
         self._outside_window = False  # currently outside work hours
+        self._disconnected_for_hours = False  # already disconnected after work hours
         self._locked = False  # Windows workstation currently locked
         self._lock_frozen = False  # timer frozen because of the lock
         self.phase: str | None = None  # "sit" | "stand" | None
@@ -1266,37 +1270,50 @@ class App(tk.Tk):
             "chk_weekdays",
         ).grid(row=5, column=4, sticky="w", padx=8)
 
+        self.disconnect_after_var = tk.BooleanVar(
+            value=bool(timer_cfg.get("disconnect_after_hours", False))
+        )
+        self._reg(
+            ttk.Checkbutton(
+                tf,
+                text=tr("chk_disconnect_after"),
+                variable=self.disconnect_after_var,
+                command=self._on_disconnect_after_pref,
+            ),
+            "chk_disconnect_after",
+        ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(4, 0))
+
         self.countdown_var = tk.StringVar(value=tr("msg_timer_stopped"))
         ttk.Label(tf, textvariable=self.countdown_var, font=("TkDefaultFont", 11, "bold")).grid(
-            row=6, column=0, columnspan=4, sticky="w", pady=(6, 0)
+            row=7, column=0, columnspan=4, sticky="w", pady=(6, 0)
         )
 
         self.timer_start_btn = self._reg(
             ttk.Button(tf, text=tr("btn_start_timer"), command=self._timer_start),
             "btn_start_timer",
         )
-        self.timer_start_btn.grid(row=7, column=0, sticky="w", pady=(4, 0))
+        self.timer_start_btn.grid(row=8, column=0, sticky="w", pady=(4, 0))
         self.timer_pause_btn = ttk.Button(
             tf, text=tr("btn_pause"), command=self._timer_pause_toggle, state="disabled"
         )
-        self.timer_pause_btn.grid(row=7, column=1, sticky="w", pady=(4, 0))
+        self.timer_pause_btn.grid(row=8, column=1, sticky="w", pady=(4, 0))
         self.timer_stop_btn = self._reg(
             ttk.Button(
                 tf, text=tr("btn_stop_timer"), command=self._timer_stop, state="disabled"
             ),
             "btn_stop_timer",
         )
-        self.timer_stop_btn.grid(row=7, column=2, sticky="w", pady=(4, 0))
+        self.timer_stop_btn.grid(row=8, column=2, sticky="w", pady=(4, 0))
         self.snooze_btn = self._reg(
             ttk.Button(tf, text=tr("btn_snooze5"), command=self._timer_snooze, state="disabled"),
             "btn_snooze5",
         )
-        self.snooze_btn.grid(row=7, column=3, sticky="w", pady=(4, 0))
+        self.snooze_btn.grid(row=8, column=3, sticky="w", pady=(4, 0))
         self.switch_now_btn = self._reg(
             ttk.Button(tf, text=tr("btn_switch_now"), command=self._switch_now),
             "btn_switch_now",
         )
-        self.switch_now_btn.grid(row=7, column=4, sticky="e", pady=(4, 0))
+        self.switch_now_btn.grid(row=8, column=4, sticky="e", pady=(4, 0))
 
         # -- Settings ------------------------------------------------------------
         settings = self._reg(
@@ -1423,6 +1440,11 @@ class App(tk.Tk):
         self.reconnect_var.set(False)
         self._on_reconnect_pref()
         self.backend.submit(self.backend.disconnect())
+
+    def _disconnect_after_hours(self) -> None:
+        """Disconnect from desk after work hours (keeps auto-reconnect enabled)."""
+        if self.backend.connected:
+            self.backend.submit(self.backend.disconnect())
 
     def _pair(self) -> None:
         self.pair_btn.configure(state="disabled")
@@ -1596,6 +1618,7 @@ class App(tk.Tk):
             work_start=self.work_start_var.get().strip(),
             work_end=self.work_end_var.get().strip(),
             work_weekdays=bool(self.weekday_var.get()),
+            disconnect_after_hours=bool(self.disconnect_after_var.get()),
         )
         save_config(self.config)
         return sit_name, stand_name, sit_min, stand_min
@@ -1772,15 +1795,37 @@ class App(tk.Tk):
                 if (outside, locked) != (self._outside_window, self._lock_frozen):
                     self._outside_window, self._lock_frozen = outside, locked
                     self._update_countdown_label()
+                # Disconnect from desk after work hours
+                if (
+                    outside
+                    and self.disconnect_after_var.get()
+                    and self.backend.connected
+                    and not self._disconnected_for_hours
+                ):
+                    self._disconnected_for_hours = True
+                    self._disconnect_after_hours()
             else:
                 self._outside_window = False
                 self._lock_frozen = False
+                self._disconnected_for_hours = False
                 self.remaining -= 1
                 if self.remaining <= 0:
                     self._switch_phase()
                 else:
                     self._maybe_warn()
                     self._update_countdown_label()
+        else:
+            # Timer not running - still check disconnect after hours if enabled
+            if self.work_var.get() and not self._in_work_window():
+                if (
+                    self.disconnect_after_var.get()
+                    and self.backend.connected
+                    and not self._disconnected_for_hours
+                ):
+                    self._disconnected_for_hours = True
+                    self._disconnect_after_hours()
+            else:
+                self._disconnected_for_hours = False
         self._update_tray_tooltip()
         self.after(1000, self._tick_timer)
 
@@ -1946,6 +1991,10 @@ class App(tk.Tk):
 
     def _on_lock_pref(self) -> None:
         self.config["timer"]["pause_on_lock"] = bool(self.lock_pause_var.get())
+        save_config(self.config)
+
+    def _on_disconnect_after_pref(self) -> None:
+        self.config["timer"]["disconnect_after_hours"] = bool(self.disconnect_after_var.get())
         save_config(self.config)
 
     def _tray_tooltip_text(self) -> str:
@@ -2143,6 +2192,7 @@ class App(tk.Tk):
             stand_min=self._duration(self.stand_min_var) or self.config["timer"]["stand_min"],
             auto_move=bool(self.auto_move_var.get()),
             pause_on_lock=bool(self.lock_pause_var.get()),
+            disconnect_after_hours=bool(self.disconnect_after_var.get()),
         )
 
     def _on_close(self, force: bool = False) -> None:
