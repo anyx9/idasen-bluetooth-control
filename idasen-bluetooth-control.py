@@ -666,12 +666,12 @@ class DeskBackend:
         return self._parse_height(await self.client.read_gatt_char(UUID_HEIGHT))
 
     async def _poll_height(self) -> None:
-        """Polls the height every 2 s in addition to notifications (fallback)."""
+        """Polls the height every 5 s in addition to notifications (fallback)."""
         while self.client and self.client.is_connected:
             with contextlib.suppress(Exception):
                 h, s = await self.get_height_and_speed()
                 self._emit("height", h, s)
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(5.0)
 
     # --- movement -------------------------------------------------------------
     async def _write(self, uuid: str, data: bytes, response: bool = False) -> None:
@@ -1035,6 +1035,7 @@ class App(tk.Tk):
         self._warned = False  # warning already shown for the current phase
         self._outside_window = False  # currently outside work hours
         self._disconnected_for_hours = False  # already disconnected after work hours
+        self._last_tooltip = ""  # cache for tray tooltip to avoid redundant updates
         self._locked = False  # Windows workstation currently locked
         self._lock_frozen = False  # timer frozen because of the lock
         self.phase: str | None = None  # "sit" | "stand" | None
@@ -1059,12 +1060,11 @@ class App(tk.Tk):
             and self.config.get("auto_connect", True)
         ):
             self.after(600, self._connect)  # auto-connect on app start
-        self.after(100, self._poll_events)
+        self.after(250, self._poll_events)
         self.after(1000, self._tick_timer)
         if sys.platform.startswith("win"):
             self._start_lock_thread()
-        else:
-            self.after(500, self._poll_lock)
+        # On non-Windows, workstation_locked() always returns False - no polling needed
 
     # ------------------------------------------------------------- UI ---
     def _reg(self, widget, key: str):
@@ -1399,7 +1399,7 @@ class App(tk.Tk):
                 self._ui_queue.get_nowait()()
         except queue.Empty:
             pass
-        self.after(100, self._poll_events)
+        self.after(250, self._poll_events)
 
     def _set_status(self, text: str, connected: bool) -> None:
         self.status_var.set(text)
@@ -1877,6 +1877,8 @@ class App(tk.Tk):
         user32.RegisterClassExW.restype = wintypes.ATOM
         user32.GetMessageW.argtypes = [ctypes.c_void_p, wintypes.HWND, wintypes.UINT, wintypes.UINT]
         user32.PeekMessageW.argtypes = [ctypes.c_void_p, wintypes.HWND, wintypes.UINT, wintypes.UINT, wintypes.UINT]
+        user32.MsgWaitForMultipleObjects.argtypes = [wintypes.DWORD, ctypes.c_void_p, wintypes.BOOL, wintypes.DWORD, wintypes.DWORD]
+        user32.MsgWaitForMultipleObjects.restype = wintypes.DWORD
         user32.DispatchMessageW.argtypes = [ctypes.c_void_p]
         user32.TranslateMessage.argtypes = [ctypes.c_void_p]
         wtsapi32.WTSRegisterSessionNotification.argtypes = [wintypes.HWND, wintypes.DWORD]
@@ -1954,16 +1956,21 @@ class App(tk.Tk):
         # Message loop: trust ONLY WTS notifications when registered
         msg = wintypes.MSG()
         while not self._lock_stop.is_set():
-            # Process all pending messages
+            # Wait for messages with 500ms timeout (allows periodic stop check)
+            # MsgWaitForMultipleObjects: wait for QS_ALLINPUT (0x04FF) with timeout
+            QS_ALLINPUT = 0x04FF
+            INFINITE = 0xFFFFFFFF
+            # Use MsgWaitForMultipleObjectsEx with 500ms timeout
+            result = user32.MsgWaitForMultipleObjects(
+                0, None, False, 500, QS_ALLINPUT
+            )
+            # Process all pending messages (non-blocking)
             while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):  # PM_REMOVE=1
                 if msg.message == 0x0012:  # WM_QUIT
                     self._lock_stop.set()
                     break
                 user32.TranslateMessage(ctypes.byref(msg))
                 user32.DispatchMessageW(ctypes.byref(msg))
-
-            # Sleep briefly to avoid busy loop
-            self._lock_stop.wait(0.05)
 
         # Cleanup
         if wts_registered:
@@ -2010,7 +2017,10 @@ class App(tk.Tk):
         return f"IDÅSEN – {timer} | {fmt_cm(self.height_m)}"
 
     def _update_tray_tooltip(self) -> None:
-        self._tray.set_tooltip(self._tray_tooltip_text())
+        text = self._tray_tooltip_text()
+        if text != self._last_tooltip:
+            self._last_tooltip = text
+            self._tray.set_tooltip(text)
 
     def _switch_phase(self) -> None:
         other = "stand" if self.phase == "sit" else "sit"
